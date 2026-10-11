@@ -5,7 +5,7 @@ from mcp.server.fastmcp import FastMCP
 
 from mcphybridrag_server.server import evaluate
 
-mcp = FastMCP("Calculator and Date Server")
+mcp = FastMCP("Calculator and Date Server", host="127.0.0.1", port=8000)
 
 @mcp.tool()
 def calculate(expression: str) -> str:
@@ -36,6 +36,3 @@ def get_current_date() -> str:
     return datetime.now().astimezone().isoformat()
 
 
-if __name__ == "__main__":
-    # Use stdio: stdout is reserved for MCP protocol messages.
-    mcp.run(transport="stdio")
