@@ -1,5 +1,6 @@
 """Invoice storage in SQLite, plus overdue-date helpers."""
 
+import json
 import os
 import sqlite3
 from contextlib import closing
@@ -21,9 +22,25 @@ CREATE TABLE IF NOT EXISTS invoices (
     total_amount   REAL    NOT NULL,
     currency       TEXT,
     late_fee_terms TEXT,
+    extra_details  TEXT,    -- JSON object: any other fields printed on the invoice
     created_at     TEXT    NOT NULL
 )
 """
+
+# Main columns; extra_details must not repeat these.
+MAIN_FIELDS = {
+    "id",
+    "client_name",
+    "invoice_number",
+    "issue_date",
+    "due_date",
+    "total_amount",
+    "currency",
+    "late_fee_terms",
+    "created_at",
+}
+MAX_EXTRA_KEYS = 50
+MAX_EXTRA_CHARS = 8000
 
 
 def connect() -> sqlite3.Connection:
@@ -32,6 +49,49 @@ def connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row  # rows behave like dicts
     conn.execute(SCHEMA)
     return conn
+
+
+def row_to_dict(row: sqlite3.Row) -> dict:
+    """Convert a DB row to a dict, decoding extra_details back from JSON."""
+    data = dict(row)
+    if data.get("extra_details"):
+        data["extra_details"] = json.loads(data["extra_details"])
+    return data
+
+
+def clean_extra_details(extra: dict | str | None) -> str | None:
+    """Validate extra invoice fields and return them as a JSON string.
+
+    Anything goes as long as it is a flat-ish JSON object of invoice data.
+    Keys that repeat a main column and empty values are dropped.
+    """
+    if not extra:
+        return None
+    if isinstance(extra, str):
+        # LLMs sometimes send the object as a JSON string, or plain text.
+        try:
+            extra = json.loads(extra)
+        except json.JSONDecodeError:
+            extra = {"notes": extra}
+    if not isinstance(extra, dict):
+        raise ValueError("extra_details must be an object of field: value pairs.")
+
+    cleaned = {
+        str(key).strip(): value
+        for key, value in extra.items()
+        if str(key).strip()
+        and str(key).strip().lower() not in MAIN_FIELDS
+        and value not in (None, "", [], {})
+    }
+    if not cleaned:
+        return None
+    if len(cleaned) > MAX_EXTRA_KEYS:
+        raise ValueError(f"extra_details has more than {MAX_EXTRA_KEYS} fields.")
+
+    text = json.dumps(cleaned, ensure_ascii=False)
+    if len(text) > MAX_EXTRA_CHARS:
+        raise ValueError(f"extra_details is too large (max {MAX_EXTRA_CHARS} chars).")
+    return text
 
 
 DATE_ORDER = os.getenv("INVOICE_DATE_ORDER", "DMY").upper()
@@ -75,6 +135,7 @@ def save_invoice(
     issue_date: str | None = None,
     currency: str | None = None,
     late_fee_terms: str | None = None,
+    extra_details: dict | str | None = None,
 ) -> dict:
     """Insert one invoice and return the saved row."""
     if not client_name.strip():
@@ -90,6 +151,7 @@ def save_invoice(
         "total_amount": float(total_amount),
         "currency": (currency or "").strip().upper() or None,
         "late_fee_terms": (late_fee_terms or "").strip() or None,
+        "extra_details": clean_extra_details(extra_details),
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 
@@ -99,9 +161,11 @@ def save_invoice(
             cursor = conn.execute(
                 """
                 INSERT INTO invoices (client_name, invoice_number, issue_date,
-                    due_date, total_amount, currency, late_fee_terms, created_at)
+                    due_date, total_amount, currency, late_fee_terms,
+                    extra_details, created_at)
                 VALUES (:client_name, :invoice_number, :issue_date,
-                    :due_date, :total_amount, :currency, :late_fee_terms, :created_at)
+                    :due_date, :total_amount, :currency, :late_fee_terms,
+                    :extra_details, :created_at)
                 """,
                 row,
             )
@@ -110,7 +174,10 @@ def save_invoice(
                 f"Invoice {row['invoice_number']!r} is already saved."
             ) from exc
 
-    return {"id": cursor.lastrowid, **row}
+    saved = {"id": cursor.lastrowid, **row}
+    if saved["extra_details"]:
+        saved["extra_details"] = json.loads(saved["extra_details"])
+    return saved
 
 
 def list_invoices(client_name: str | None = None, limit: int = 20) -> list[dict]:
@@ -126,7 +193,7 @@ def list_invoices(client_name: str | None = None, limit: int = 20) -> list[dict]
     params.append(limit)
 
     with closing(connect()) as conn:
-        return [dict(r) for r in conn.execute(query, params)]
+        return [row_to_dict(r) for r in conn.execute(query, params)]
 
 
 def get_invoice(invoice_number: str) -> dict:
@@ -142,7 +209,7 @@ def get_invoice(invoice_number: str) -> dict:
 
     if row is None:
         raise ValueError(f"No saved invoice with number {invoice_number!r}.")
-    return dict(row)
+    return row_to_dict(row)
 
 
 def list_overdue_invoices() -> dict:
@@ -157,7 +224,7 @@ def list_overdue_invoices() -> dict:
         ).fetchall()
 
     invoices = [
-        {**dict(r), "days_overdue": (today - date.fromisoformat(r["due_date"])).days}
+        {**row_to_dict(r), "days_overdue": (today - date.fromisoformat(r["due_date"])).days}
         for r in rows
     ]
     return {"today": today.isoformat(), "count": len(invoices), "invoices": invoices}
@@ -178,7 +245,7 @@ def invoices_due_between(start_date: str, end_date: str) -> dict:
             (start, end),
         ).fetchall()
 
-    invoices = [dict(r) for r in rows]
+    invoices = [row_to_dict(r) for r in rows]
     return {
         "start_date": start,
         "end_date": end,

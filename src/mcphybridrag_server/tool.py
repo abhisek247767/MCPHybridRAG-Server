@@ -1,5 +1,6 @@
 import ast
 from datetime import datetime
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -45,17 +46,24 @@ def save_invoice(
     issue_date: str | None = None,
     currency: str | None = None,
     late_fee_terms: str | None = None,
+    extra_details: dict[str, Any] | None = None,
 ) -> dict:
     """Save an invoice (client, amount, dates, late fee terms) to the database.
 
     Args:
         client_name: Who the invoice is billed to.
         total_amount: Final amount due, as a number without currency symbol.
-        due_date: Payment due date, YYYY-MM-DD.
+        due_date: Payment due date, copied exactly as printed on the invoice.
         invoice_number: Invoice number/ID printed on the invoice.
-        issue_date: Invoice date, YYYY-MM-DD.
+        issue_date: Invoice date, copied exactly as printed on the invoice.
         currency: Currency code, e.g. USD or INR.
         late_fee_terms: Late payment fee terms, as written on the invoice.
+        extra_details: Any OTHER fields printed on this invoice that don't fit
+            above, as {"field_name": value}. Examples: po_number, line_items
+            (list of {description, quantity, unit_price, amount}), subtotal,
+            tax_rate, tax_amount, bill_to_address, ship_to, payable_to,
+            payment_terms, payment_method, notes. Only data shown on the
+            invoice itself; never add anything that is not on the invoice.
     """
     return invoice_tools.save_invoice(
         client_name=client_name,
@@ -65,6 +73,7 @@ def save_invoice(
         issue_date=issue_date,
         currency=currency,
         late_fee_terms=late_fee_terms,
+        extra_details=extra_details,
     )
 
 
