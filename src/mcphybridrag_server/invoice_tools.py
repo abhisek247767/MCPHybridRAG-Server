@@ -34,14 +34,37 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+DATE_ORDER = os.getenv("INVOICE_DATE_ORDER", "DMY").upper()
+
+DATE_FORMATS = [
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+    "%d %b %Y",  # 05 Jan 2026
+    "%d %B %Y",  # 05 January 2026
+    "%b %d, %Y",  # Jan 05, 2026
+    "%B %d, %Y",  # January 05, 2026
+] + (
+    ["%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"]
+    if DATE_ORDER == "DMY"
+    else ["%m/%d/%Y", "%m-%d-%Y", "%m.%d.%Y"]
+)
+
+
 def parse_date(value: str | None, field: str) -> str | None:
-    """Check a date is YYYY-MM-DD; empty means not provided."""
-    if not value:
+    """Normalise a date to YYYY-MM-DD; empty means not provided.
+
+    Small LLMs often copy dates as printed (e.g. 20/01/2026) instead of
+    converting them, so common formats are accepted here.
+    """
+    if not value or not value.strip():
         return None
-    try:
-        return date.fromisoformat(value.strip()).isoformat()
-    except ValueError as exc:
-        raise ValueError(f"{field} must be YYYY-MM-DD, got {value!r}") from exc
+    text = value.strip()
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    raise ValueError(f"{field} must be a date like YYYY-MM-DD, got {value!r}")
 
 
 def save_invoice(
@@ -92,7 +115,8 @@ def save_invoice(
 
 def list_invoices(client_name: str | None = None, limit: int = 20) -> list[dict]:
     """Return saved invoices, newest first, optionally filtered by client."""
-    limit = max(1, min(limit, 100))
+    # LLMs sometimes send 0 or junk for "no limit"; treat that as the default.
+    limit = min(limit, 100) if limit and limit > 0 else 20
     query = "SELECT * FROM invoices"
     params: list = []
     if client_name and client_name.strip():
@@ -103,6 +127,97 @@ def list_invoices(client_name: str | None = None, limit: int = 20) -> list[dict]
 
     with closing(connect()) as conn:
         return [dict(r) for r in conn.execute(query, params)]
+
+
+def get_invoice(invoice_number: str) -> dict:
+    """Return one invoice by its invoice number (case-insensitive)."""
+    if not invoice_number or not invoice_number.strip():
+        raise ValueError("invoice_number cannot be empty.")
+
+    with closing(connect()) as conn:
+        row = conn.execute(
+            "SELECT * FROM invoices WHERE invoice_number = ? COLLATE NOCASE",
+            (invoice_number.strip(),),
+        ).fetchone()
+
+    if row is None:
+        raise ValueError(f"No saved invoice with number {invoice_number!r}.")
+    return dict(row)
+
+
+def list_overdue_invoices() -> dict:
+    """Return invoices whose due date is before today, most overdue first."""
+    # Use the local date from Python; SQLite's date('now') is UTC.
+    today = date.today()
+
+    with closing(connect()) as conn:
+        rows = conn.execute(
+            "SELECT * FROM invoices WHERE due_date < ? ORDER BY due_date",
+            (today.isoformat(),),
+        ).fetchall()
+
+    invoices = [
+        {**dict(r), "days_overdue": (today - date.fromisoformat(r["due_date"])).days}
+        for r in rows
+    ]
+    return {"today": today.isoformat(), "count": len(invoices), "invoices": invoices}
+
+
+def invoices_due_between(start_date: str, end_date: str) -> dict:
+    """Return invoices with a due date from start_date to end_date (inclusive)."""
+    start = parse_date(start_date, "start_date")
+    end = parse_date(end_date, "end_date")
+    if not start or not end:
+        raise ValueError("start_date and end_date are both required.")
+    if start > end:
+        start, end = end, start  # forgive reversed ranges
+
+    with closing(connect()) as conn:
+        rows = conn.execute(
+            "SELECT * FROM invoices WHERE due_date BETWEEN ? AND ? ORDER BY due_date",
+            (start, end),
+        ).fetchall()
+
+    invoices = [dict(r) for r in rows]
+    return {
+        "start_date": start,
+        "end_date": end,
+        "count": len(invoices),
+        "invoices": invoices,
+    }
+
+
+def total_due_by_client(client_name: str) -> dict:
+    """Sum invoice amounts for a client, grouped by currency."""
+    if not client_name or not client_name.strip():
+        raise ValueError("client_name cannot be empty.")
+
+    with closing(connect()) as conn:
+        rows = conn.execute(
+            """
+            SELECT currency, COUNT(*) AS invoice_count, SUM(total_amount) AS total
+            FROM invoices
+            WHERE client_name LIKE ?
+            GROUP BY currency
+            """,
+            (f"%{client_name.strip()}%",),
+        ).fetchall()
+
+    # Amounts in different currencies can't be added together, so keep
+    # one total per currency.
+    totals = [
+        {
+            "currency": r["currency"] or "unknown",
+            "invoice_count": r["invoice_count"],
+            "total": round(r["total"], 2),
+        }
+        for r in rows
+    ]
+    return {
+        "client_name": client_name.strip(),
+        "invoice_count": sum(t["invoice_count"] for t in totals),
+        "totals": totals,
+    }
 
 
 def days_overdue(due_date: str) -> dict:

@@ -80,6 +80,43 @@ def list_invoices(client_name: str | None = None, limit: int = 20) -> list[dict]
 
 
 @mcp.tool()
+def get_invoice(invoice_number: str) -> dict:
+    """Look up one saved invoice by its invoice number.
+
+    Args:
+        invoice_number: The invoice number/ID, e.g. INV-102.
+    """
+    return invoice_tools.get_invoice(invoice_number)
+
+
+@mcp.tool()
+def list_overdue_invoices() -> dict:
+    """List saved invoices whose due date has already passed (overdue, late payments)."""
+    return invoice_tools.list_overdue_invoices()
+
+
+@mcp.tool()
+def invoices_due_between(start_date: str, end_date: str) -> dict:
+    """List saved invoices due within a period: this week, this month, or between two dates.
+
+    Args:
+        start_date: First day of the range, YYYY-MM-DD.
+        end_date: Last day of the range, YYYY-MM-DD.
+    """
+    return invoice_tools.invoices_due_between(start_date, end_date)
+
+
+@mcp.tool()
+def total_due_by_client(client_name: str) -> dict:
+    """Add up how much one client owes in total across their saved invoices.
+
+    Args:
+        client_name: The client's name, or part of it.
+    """
+    return invoice_tools.total_due_by_client(client_name)
+
+
+@mcp.tool()
 def days_overdue(due_date: str) -> dict:
     """Calculate how many days a payment is overdue, compared with today's date.
 
