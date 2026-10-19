@@ -1,0 +1,11 @@
+RadVista is a medical imaging application.
+
+It helps healthcare professionals view and review medical images.
+
+The application supports reviewing imaging studies and managing
+medical imaging workflows.
+
+RAG stands for Retrieval-Augmented Generation.
+
+RAG retrieves relevant information from documents and provides
+that information to a language model to help answer questions.

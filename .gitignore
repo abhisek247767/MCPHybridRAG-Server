@@ -221,3 +221,6 @@ __marimo__/
 
 # Local invoice database (contains client data - never commit)
 invoices.db
+
+# Local vector index (rebuilt by mcphybridrag-ingest)
+chroma_db/

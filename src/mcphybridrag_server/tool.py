@@ -4,7 +4,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from mcphybridrag_server import invoice_tools
+from mcphybridrag_server import invoice_tools, rag
 from mcphybridrag_server.server import evaluate
 
 mcp = FastMCP("Calculator and Date Server", host="127.0.0.1", port=8000)
@@ -133,3 +133,28 @@ def days_overdue(due_date: str) -> dict:
         due_date: The due date in YYYY-MM-DD format.
     """
     return invoice_tools.days_overdue(due_date)
+
+
+@mcp.tool()
+def search_documents(query: str) -> str:
+    """Search indexed documents for information relevant to a question.
+
+    Args:
+        query: What to look for, in plain words.
+    """
+    if not query.strip():
+        raise ValueError("query cannot be empty.")
+
+    results = rag.search(query)
+
+    if not results:
+        return (
+            "No relevant documents were found. "
+            "If none have been indexed yet, run: uv run mcphybridrag-ingest"
+        )
+
+    return "\n\n".join(
+        f"Source: {doc.metadata.get('source', 'unknown')}\n"
+        f"Content: {doc.page_content}"
+        for doc in results
+    )
